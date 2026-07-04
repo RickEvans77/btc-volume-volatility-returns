@@ -1,0 +1,375 @@
+---
+title: "How Do Trading Volume and Volatility Explain Bitcoin's Daily Price Movements Across Halving Cycles and Seasons (2013-2025)?"
+author: "Rick Evans Lopez"
+date: "2026-07-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.align = "center")
+```
+
+# 1. Introduction
+
+## 1.1 Research Question
+
+This project investigates how trading activity and market risk explain short-term Bitcoin price movements over time. Specifically, it examines whether trading volume, volatility, halving cycles, and seasonal patterns help explain the magnitude of daily Bitcoin returns between 2013 and 2025.
+
+## 1.2 Economic Motivation
+
+Bitcoin is characterized by extreme volatility, which poses challenges for investors and financial institutions seeking to manage risk and optimize market entry and exit decisions. Identifying periods associated with higher or lower return variability is economically relevant for portfolio allocation and timing strategies.
+
+This analysis aims to provide data-driven insights into whether historical volatility and trading volume patterns differ systematically across halving cycles and seasons, and whether these factors are associated with larger daily price movements.
+
+## 1.3 Variables and Model Design
+
+The empirical analysis focuses on explaining the magnitude of short-term Bitcoin price movements using market activity, risk, and structural indicators.
+
+**Dependent variable:** the absolute value of BTC returns (`|daily_return|`). This variable captures the magnitude of daily price changes, independently of direction, and serves as an indicator of short-term price instability.
+
+**Main explanatory variables:**
+
+- **Log Trading Volume** `log(volume)` — log-transformed to reduce skewness and capture proportional changes in market activity. Higher trading volume is expected to be associated with larger price movements due to increased trading intensity.
+- **30-Day Rolling Volatility** `volatility_30d` — the rolling standard deviation of daily log-returns over a 30-day window, serving as a measure of prevailing market risk.
+
+**Structural and seasonal controls:**
+
+- **Halving Cycle** `halving_cycle` — a categorical variable indicating the BTC halving regime, reflecting structural supply-side changes in the BTC protocol.
+- **Season** `season` — a categorical variable representing calendar seasons, used to explore potential seasonal patterns in market behavior.
+
+# 2. Importing and Wrangling
+
+## 2.1 Libraries and Data Sets
+
+```{r libraries}
+library("tidyverse")  # data wrangling
+library("janitor")    # cleaning datasets
+library("corrplot")   # correlation plots
+library("gtsummary")  # summary tables
+library("patchwork")  # combining plots
+library("lubridate")  # date handling
+library("ggplot2")    # visualizations
+library("ggridges")   # ridgeline plots
+library("moments")    # skewness and kurtosis
+library("scales")     # axis formatting
+library("FSA")        # dunnTest
+```
+
+```{r import}
+btc_raw <- read.csv("Bitcoin_history_data.csv")
+```
+
+## 2.2 Data Cleaning and Standardization
+
+The data are standardized by harmonizing variable names, converting dates to proper formats, and ensuring chronological ordering.
+
+```{r cleaning}
+btc <- btc_raw |>
+  clean_names()
+
+# Set "date" as a proper date type, not text
+btc <- btc |>
+  mutate(date = ymd(date)) |>
+  arrange(date)
+
+# Check for missing values
+colSums(is.na(btc))
+```
+
+No missing observations are detected, allowing the analysis to proceed without imputations or sample reductions.
+
+## 2.3 Returns and Volatility
+
+Daily simple returns and log-returns are computed to measure price changes, while a 30-day rolling volatility measure captures short-term market risk.
+
+```{r returns}
+btc <- btc |>
+  arrange(date) |>
+  mutate(
+    daily_return = (close - lag(close)) / lag(close),
+    log_return   = log(close / lag(close))
+  )
+
+# 30-day rolling window volatility
+btc <- btc |>
+  mutate(
+    volatility_30d = zoo::rollapply(
+      log_return,
+      width = 30,
+      FUN = sd,
+      fill = NA,
+      align = "right"
+    )
+  )
+```
+
+Log-returns are used exclusively to compute rolling volatility due to their additive properties; they are not analyzed directly. The dependent variable is defined as the absolute value of daily simple returns.
+
+```{r abs_return}
+btc <- btc |>
+  mutate(abs_return = abs(daily_return))
+```
+
+This transformation focuses the analysis on return magnitude rather than direction, aligning the dependent variable with the study's objective of explaining price instability.
+
+## 2.4 Time-Based Indicators
+
+Time-based categorical variables capture structural regime changes and potential seasonal patterns.
+
+```{r indicators}
+# Halving cycles
+btc <- btc |>
+  mutate(
+    halving_cycle = case_when(
+      date < as.Date("2016-07-09") ~ "1st Halving Cycle (2014-2016)",
+      date >= as.Date("2016-07-09") & date < as.Date("2020-05-11") ~ "2nd Halving Cycle (2016-2020)",
+      date >= as.Date("2020-05-11") & date < as.Date("2024-04-20") ~ "3rd Halving Cycle (2020-2024)",
+      date >= as.Date("2024-04-20") ~ "4th Halving Cycle (2024+)",
+      TRUE ~ "Other"
+    )
+  )
+
+# Seasons
+btc <- btc |>
+  mutate(
+    season = case_when(
+      month(date) %in% c(12, 1, 2) ~ "Winter",
+      month(date) %in% c(3, 4, 5)  ~ "Spring",
+      month(date) %in% c(6, 7, 8)  ~ "Summer",
+      month(date) %in% c(9, 10, 11) ~ "Autumn"
+    ) |> factor(levels = c("Winter", "Spring", "Summer", "Autumn"))
+  )
+```
+
+The halving cycle variable partitions the sample into distinct monetary regimes tied to Bitcoin's supply schedule. Seasonal indicators allow exploration of calendar-based patterns in volatility and trading activity.
+
+# 3. Exploratory Data Analysis (EDA)
+
+## 3.1 Distribution of Key Variables
+
+```{r dist-plots}
+ggplot(btc, aes(x = abs_return)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, fill = "grey", color = "blue") +
+  geom_density(linewidth = 1) +
+  labs(title = "Distribution of Absolute Daily Returns", x = "|Daily Return|", y = "Density") +
+  theme_minimal()
+
+ggplot(btc, aes(x = log(volume))) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, fill = "grey", color = "blue") +
+  geom_density(linewidth = 1) +
+  labs(title = "Distribution of Log Trading Volume", x = "Log(Volume)", y = "Density") +
+  theme_minimal()
+
+ggplot(btc, aes(x = volatility_30d)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 60, fill = "grey", color = "blue") +
+  geom_density(linewidth = 1) +
+  labs(title = "Distribution of 30-Day Volatility", x = "30-Day Volatility", y = "Density") +
+  theme_minimal()
+```
+
+The distribution of absolute daily returns is strongly right-skewed: large price movements are infrequent but economically relevant. Trading volume and volatility also exhibit right-skewness, supporting the use of logarithmic and robust methods in subsequent analysis.
+
+## 3.2 Volatility Across Halving Cycles, Seasons, and Months
+
+```{r boxplots}
+# Halving cycles
+ggplot(btc |> filter(!is.na(volatility_30d)),
+       aes(x = halving_cycle, y = volatility_30d, fill = halving_cycle)) +
+  geom_boxplot(alpha = 0.7) +
+  labs(title = "Volatility Distribution Across Halving Cycles",
+       subtitle = "Which cycle was most volatile?",
+       x = "Halving Cycle", y = "30-Day Volatility") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1))
+
+# Seasons
+ggplot(btc, aes(x = season, y = volatility_30d, fill = season)) +
+  geom_boxplot(alpha = 0.6) +
+  labs(title = "Volatility Distribution Across Seasons",
+       subtitle = "Which season was most volatile?",
+       x = "Season", y = "30-Day Volatility") +
+  theme_minimal()
+
+# Monthly average
+btc_monthly_mean <- btc |>
+  mutate(month = month(date, label = TRUE)) |>
+  group_by(month) |>
+  summarise(mean_vol = mean(volatility_30d, na.rm = TRUE))
+
+ggplot(btc_monthly_mean, aes(x = month, y = mean_vol, group = 1)) +
+  geom_line(linewidth = 1.2, color = "blue") +
+  geom_point(size = 2) +
+  labs(title = "Average Monthly Volatility",
+       subtitle = "Which month was the most volatile?",
+       x = "Month", y = "Mean 30-Day Volatility") +
+  theme_minimal()
+```
+
+Volatility differs across halving cycles, with later cycles exhibiting higher median volatility and greater dispersion. Seasonal differences are present but less pronounced than structural regime differences.
+
+## 3.3 Trading Volume vs. Volatility
+
+```{r volume-vol-scatter}
+ggplot(btc, aes(x = log(volume), y = volatility_30d)) +
+  geom_point(aes(color = halving_cycle), alpha = 0.15, size = 1) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 1) +
+  facet_wrap(~ halving_cycle, ncol = 2) +
+  scale_color_manual(values = c(
+    "1st Halving Cycle (2014-2016)" = "orange",
+    "2nd Halving Cycle (2016-2020)" = "blue",
+    "3rd Halving Cycle (2020-2024)" = "green",
+    "4th Halving Cycle (2024+)"     = "purple"
+  )) +
+  labs(title = "Volume vs. Volatility Across Bitcoin Halving Cycles",
+       subtitle = "Linear trends reveal how trading activity relates to market turbulence",
+       x = "Log(Trading Volume)", y = "30-Day Volatility", color = "Halving Cycle") +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 11),
+    legend.position = "bottom",
+    panel.spacing = unit(1.2, "lines")
+  )
+```
+
+A positive association between trading volume and volatility is observed across all halving cycles, suggesting that periods of heightened trading activity coincide with increased market turbulence.
+
+## 3.4 Yearly Evolution of Volatility
+
+```{r ridgeline}
+btc |>
+  mutate(
+    year = year(date),
+    year = factor(year, levels = sort(unique(year)))
+  ) |>
+  ggplot(aes(x = volatility_30d, y = year, fill = year)) +
+  geom_density_ridges(alpha = 0.5, scale = 3.5) +
+  scale_y_discrete(limits = rev) +
+  labs(title = "Yearly Evolution of Bitcoin Volatility (Density)",
+       x = "30-Day Volatility", y = "Year", fill = "Year") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+The distribution of volatility evolves noticeably over time. Earlier years exhibit greater dispersion and higher overall volatility, whereas more recent periods show comparatively more concentrated distributions, although episodes of tail risk remain present.
+
+## 3.5 Correlation Structure
+
+```{r correlation}
+cor_data <- btc |>
+  select(abs_return, volatility_30d, volume) |>
+  mutate(volume = log(volume))
+
+corrplot(
+  cor(cor_data, use = "complete.obs"),
+  method = "color",
+  addCoef.col = "black",
+  tl.col = "black",
+  number.cex = 0.8
+)
+```
+
+Absolute returns are positively correlated with volatility and trading volume, supporting their inclusion as explanatory variables in the regression model.
+
+# 4. Statistical Tests
+
+## 4.1 Is Volatility Different Across Halving Cycles?
+
+A Kruskal-Wallis test is applied to check whether the distribution of volatility differs across halving cycles. This non-parametric test is appropriate because volatility is not normally distributed.
+
+```{r kruskal-halving}
+kruskal.test(volatility_30d ~ halving_cycle, data = btc)
+```
+
+The test rejects the null hypothesis of equal volatility distributions across halving cycles: volatility is not homogeneous across regimes.
+
+### 4.1.2 Which Halving Cycles Differ Most?
+
+```{r dunn-test}
+dunnTest(volatility_30d ~ halving_cycle, data = btc, method = "bonferroni")
+```
+
+Post-hoc comparisons indicate that volatility differences are primarily driven by contrasts between earlier and later halving cycles.
+
+## 4.2 Is Trading Volume Different Across Seasons?
+
+```{r kruskal-season}
+# Volume is logged to compensate for right-skewness
+kruskal.test(log(volume) ~ season, data = btc)
+```
+
+No statistically significant differences in trading volume across seasons are detected.
+
+# 5. Regression Model
+
+A linear regression model is estimated to explain the magnitude of daily Bitcoin returns using trading volume, volatility, halving cycles, and seasonal indicators.
+
+```{r regression}
+model_regression <- lm(
+  abs_return ~ log(volume) + volatility_30d + halving_cycle + season,
+  data = btc
+)
+
+summary(model_regression)
+```
+
+The results indicate that volatility and trading volume are significant predictors of return magnitude, while halving cycles capture structural differences in market behavior. Seasonal effects are weaker once volatility and volume are controlled for.
+
+# 6. Model Diagnostics
+
+## 6.1 Residuals vs. Fitted
+
+Do the residuals appear randomly scattered around zero, or do they reveal structure the model fails to capture?
+
+```{r resid-fitted}
+plot(model_regression, which = 1)
+```
+
+The residuals-vs-fitted plot reveals increasing dispersion for higher fitted values, indicating heteroskedasticity. This is consistent with typical financial return data, where larger predicted price movements tend to be associated with greater uncertainty. No strong nonlinear structure is observed, suggesting the linear specification captures the main conditional relationships in the data.
+
+## 6.2 QQ Plot
+
+Does the model adequately capture typical price movements, or do extreme Bitcoin events dominate the residual distribution?
+
+```{r qq-plot}
+plot(model_regression, which = 2)
+```
+
+The QQ plot reveals strong deviations from normality in the upper tail of the residual distribution, reflecting the presence of extreme Bitcoin price movements that occur more frequently than a normal distribution would predict. This is typical in financial and cryptocurrency markets and does not invalidate the regression results, though it warrants caution when interpreting inference based on normality assumptions.
+
+## 6.3 Heteroskedasticity Test (Breusch-Pagan)
+
+Is the variability of the regression errors constant across different levels of trading activity and volatility, or does it systematically increase during turbulent market conditions?
+
+```{r bp-test}
+lmtest::bptest(model_regression)
+```
+
+The Breusch-Pagan test strongly rejects the null hypothesis of homoskedasticity. This indicates severe heteroskedasticity: the variance of the residuals is not constant and increases systematically with the explanatory variables. This reflects the intrinsic nature of Bitcoin markets, where periods of elevated volatility and trading activity are associated with disproportionately large pricing errors, and highlights the limitations of linear models in capturing extreme market dynamics.
+
+# 7. Interpretation of Results
+
+## 7.1 Trading Volume and Absolute Returns
+
+Trading volume is positively associated with the absolute value of daily Bitcoin returns. Higher trading volume reflects increased market participation and information flow; during periods of intense activity, new information is incorporated more rapidly into prices, leading to larger price adjustments. Trading volume acts as a catalyst for price instability in the Bitcoin market.
+
+## 7.2 Volatility and Absolute Returns
+
+30-day rolling volatility is strongly and positively related to absolute daily returns. Periods of elevated volatility signal heightened uncertainty and risk; in such environments prices react more strongly to shocks, leading to larger daily price movements regardless of direction. Volatility captures persistent market risk and is a key driver of short-term Bitcoin price instability.
+
+## 7.3 Halving Cycles and Structural Differences
+
+Halving cycles are associated with statistically significant differences in return magnitude, even after controlling for volume and volatility. Bitcoin halving events represent structural supply-side changes embedded in the protocol; these events alter market expectations, liquidity conditions, and speculative behavior, leading to regime-dependent price dynamics. The Bitcoin market exhibits regime-dependent behavior across halving cycles, confirming that price dynamics cannot be fully understood without accounting for structural shifts.
+
+## 7.4 Seasonal Patterns
+
+Seasonal effects are weak or inconsistent once volume and volatility are accounted for. Unlike traditional financial markets, Bitcoin does not display strong calendar-based seasonality, reflecting its global, decentralized, and continuous trading nature.
+
+## 7.5 Overall Economic Interpretation
+
+Overall, the results suggest that Bitcoin's short-term price instability is primarily driven by market activity and risk conditions rather than calendar effects. High trading volume and elevated volatility significantly amplify daily price movements, while halving cycles introduce structural shifts that alter market behavior across regimes. These findings highlight Bitcoin's speculative nature and its sensitivity to changes in market sentiment and liquidity.
+
+## 7.6 Limitations and Next Steps
+
+The diagnostic checks in Section 6 show that the classical OLS standard errors are likely understated due to heteroskedasticity. A natural extension would be to re-estimate the model with heteroskedasticity-robust standard errors (e.g. `lmtest::coeftest(model_regression, vcov = sandwich::vcovHC(model_regression, type = "HC1"))`), or to model volatility directly with a GARCH-family specification, which is purpose-built for the volatility clustering observed in Section 3.4.
