@@ -58,4 +58,4 @@ https://www.kaggle.com/datasets/adilshamim8/bitcoin-historical-data
 
 ## Academic Context
 
-Capstone project — Preparatory Program, University of Basel (FS26).
+Capstone project — Preparatory Program, University of Basel (HS25).
